@@ -185,19 +185,18 @@ app.post("/", async (req, res) => {
   const { skillLevel, learningGoal, learningMethod, topics } = req.body;
   const topicsArray = topics.split(",").map(t => t.trim());
 
-  const userPrompt = createStructuredPrompt({
-    skillLevel,
-    learningGoal,
-    learningMethod,
-    topics: topicsArray
-  });
+  // Use the same system prompt as WhatsApp for consistency
+  const userMessages = [
+    { role: "user", content: `Skill Level: ${skillLevel}\nLearning Goal: ${learningGoal}\nPreferred Method: ${learningMethod}\nTopics: ${topicsArray.join(", ")}` }
+  ];
 
   try {
-    const groqResponse = await getGroqChatCompletion(userPrompt);
-    const reply = groqResponse.choices[0]?.message?.content || "No response.";
-    res.render("index", { reply, userPrompt });
-  } catch (error) {
-    res.render("index", { reply: "Error: " + error.message, userPrompt });
+    const groqResponse = await getGroqChatCompletion(userMessages);
+    const reply = groqResponse.choices[0]?.message?.content || "Sorry, I didn’t understand that.";
+    res.render("index", { reply, userPrompt: userMessages[0].content });
+  } catch (err) {
+    console.error("Web error:", err.message);
+    res.render("index", { reply: "Oops, something went wrong. Please try again later.", userPrompt: userMessages[0].content });
   }
 });
 
