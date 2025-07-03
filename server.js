@@ -4,11 +4,11 @@ import pkg from "twilio";
 const { twiml } = pkg;
 const MessagingResponse = twiml.MessagingResponse;
 import twilio from "twilio";
-const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+const twilioClient = pkg(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 import { getGroqChatCompletion } from "./groq3.js";
 import path from "path";
 import { fileURLToPath } from "url";
-import { addReminder } from "./reminderAgent.js";
+import fs from "fs";
 
 
 dotenv.config();
@@ -17,7 +17,6 @@ const PORT = process.env.PORT || 3000;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const reminders = [];
 
 // Set EJS as the view engine
 app.set("view engine", "ejs");
@@ -44,26 +43,43 @@ Please suggest a curated list of up to 5 learning resources. For each, include:
 Respond in clear bullet points.`;
 }
 
-function scheduleReminder(userId, message, delayInMs = 60 * 1000) {
-  setTimeout(() => {
-    // Send WhatsApp reminder via Twilio
-    twilioClient.messages
-      .create({
-        body: `⏰ Reminder: Don't forget to revisit this resource:\n\n${message}`,
-        from: 'whatsapp:+14155238886',
-        to: userId // Format: 'whatsapp:+2547XXXXXXX'
-      })
-      .then(msg => console.log(`Reminder sent to ${userId}: ${msg.sid}`))
-      .catch(err => console.error('Reminder failed:', err));
-  }, delayInMs);
-}
+
 
 
 // In-memory conversation history per user
 const userConversations = {};
 
 // WhatsApp-friendly menu options
-const MAIN_MENU = `Welcome! Please choose an option:\n\n1. Start or continue learning path\n2. Get a daily learning tip\n3. Take a quiz\n4. View progress\n5. Search for a resource\n6. Manage reminders\n7. Switch language\n8. Send feedback\n\nReply with the number or the option name.\nYou can type 'menu' at any time to return here.`;
+const MAIN_MENU = `Welcome! Please choose an option:\n\n1. Start or continue learning path\n2. Get a daily learning tip\n3. Take a quiz\n4. View progress\n5. Search for a resource\n6. Switch language\n7. Send feedback\n\nReply with the number or the option name.\nYou can type 'menu' at any time to return here.`;
+
+// Extract structured learning info from free-form text
+function extractUserDataFromFreeForm(input) {
+  let skillLevel = '';
+  let learningGoal = '';
+  let learningMethod = '';
+  let topics = [];
+
+  if (/beginner|novice/i.test(input)) skillLevel = 'beginner';
+  else if (/intermediate/i.test(input)) skillLevel = 'intermediate';
+  else if (/advanced|expert/i.test(input)) skillLevel = 'advanced';
+
+  if (/video|youtube/i.test(input)) learningMethod = 'videos';
+  else if (/article|blog/i.test(input)) learningMethod = 'articles';
+  else if (/interactive|hands[- ]?on/i.test(input)) learningMethod = 'interactive';
+
+  const goalMatch = input.match(/want to learn about ([^.,;]+)/i);
+  if (goalMatch) {
+    learningGoal = goalMatch[1].trim();
+    topics = learningGoal.split(/ in | for | on | with | and |,|\./i).map(s => s.trim()).filter(Boolean);
+  } else {
+    const learnMatch = input.match(/learn(?:ing)?(?: about)? ([^.,;]+)/i);
+    if (learnMatch) {
+      learningGoal = learnMatch[1].trim();
+      topics = learningGoal.split(/ in | for | on | with | and |,|\./i).map(s => s.trim()).filter(Boolean);
+    }
+  }
+  return { skillLevel, learningGoal, learningMethod, topics };
+}
 
 function getMenuOption(text) {
   const normalized = text.trim().toLowerCase();
@@ -72,9 +88,8 @@ function getMenuOption(text) {
   if (["3", "quiz", "take quiz", "quiz me"].includes(normalized)) return 3;
   if (["4", "progress", "view progress"].includes(normalized)) return 4;
   if (["5", "search", "resource", "find resource"].includes(normalized)) return 5;
-  if (["6", "reminder", "reminders", "manage reminders"].includes(normalized)) return 6;
-  if (["7", "language", "switch language"].includes(normalized)) return 7;
-  if (["8", "feedback", "send feedback"].includes(normalized)) return 8;
+  if (["6", "language", "switch language"].includes(normalized)) return 6;
+  if (["7", "feedback", "send feedback"].includes(normalized)) return 7;
   if (["menu", "main menu", "help"].includes(normalized)) return 0;
   return null;
 }
@@ -84,95 +99,52 @@ app.post("/webhook", async (req, res) => {
   const incomingMsg = req.body.Body;
   const from = req.body.From;
 
-  console.log(`Incoming message from ${from}: ${incomingMsg}`);
+  console.log(`--- Incoming Webhook Request ---`);
+  console.log(`From: ${from}`);
+  console.log(`Message: ${incomingMsg}`);
 
   // Retrieve or initialize conversation history
   if (!userConversations[from]) {
     userConversations[from] = [];
   }
 
-  // Menu system logic
-  const menuOption = getMenuOption(incomingMsg);
   const twiml = new MessagingResponse();
 
-  if (menuOption === 0) {
-    // Show main menu
-    twiml.message(MAIN_MENU);
-    res.type("text/xml").send(twiml.toString());
-    return;
-  } else if (menuOption === 1) {
-    // Start or continue learning path (AI tutor)
-    // Add user message to conversation history
-    userConversations[from].push({ role: "user", content: incomingMsg });
-    try {
-      const groqResponse = await getGroqChatCompletion(userConversations[from]);
-      const reply = groqResponse.choices[0]?.message?.content || "Sorry, I didn’t understand that.";
-      userConversations[from].push({ role: "assistant", content: reply });
-      twiml.message(reply);
-      res.type("text/xml").send(twiml.toString());
-      reminders.push({ userId: from, message: reply, scheduledTime: Date.now() });
-      scheduleReminder(from, reply);
-      addReminder(from, reply);
-      return;
-    } catch (err) {
-      console.error("Error:", err.message);
-      twiml.message("Oops, something went wrong. Please try again later.");
-      res.type("text/xml").send(twiml.toString());
-      return;
-    }
-  } else if (menuOption === 2) {
-    // Daily learning tip placeholder
-    twiml.message("💡 Tip: Consistency is key! Try to learn a little every day, even if it's just 5 minutes.");
-    res.type("text/xml").send(twiml.toString());
-    return;
-  } else if (menuOption === 3) {
-    // Quiz placeholder
-    twiml.message("📝 Quiz mode coming soon! Reply with a topic to get a sample question.");
-    res.type("text/xml").send(twiml.toString());
-    return;
-  } else if (menuOption === 4) {
-    // Progress placeholder
-    twiml.message("📊 Progress tracking coming soon! You'll soon be able to see your learning milestones here.");
-    res.type("text/xml").send(twiml.toString());
-    return;
-  } else if (menuOption === 5) {
-    // Resource search placeholder
-    twiml.message("🔎 Resource search coming soon! Reply with a topic or type of resource you want.");
-    res.type("text/xml").send(twiml.toString());
-    return;
-  } else if (menuOption === 6) {
-    // Reminders management placeholder
-    twiml.message("⏰ Reminders management coming soon! You'll soon be able to set, view, and cancel reminders here.");
-    res.type("text/xml").send(twiml.toString());
-    return;
-  } else if (menuOption === 7) {
-    // Language switch placeholder
-    twiml.message("🌐 Language switching coming soon! You'll soon be able to use Swahili, Sheng, or English.");
-    res.type("text/xml").send(twiml.toString());
-    return;
-  } else if (menuOption === 8) {
-    // Feedback placeholder
-    twiml.message("🙏 Feedback coming soon! You'll soon be able to send suggestions or report issues here.");
-    res.type("text/xml").send(twiml.toString());
-    return;
-  }
-
-  // Fallback: continue with AI tutor as before
+  // Add the user's new message to the conversation history
   userConversations[from].push({ role: "user", content: incomingMsg });
+  console.log(`Conversation history before Groq call:`, JSON.stringify(userConversations[from], null, 2));
+
   try {
+    // Pass the full conversation history to the AI tutor
     const groqResponse = await getGroqChatCompletion(userConversations[from]);
     const reply = groqResponse.choices[0]?.message?.content || "Sorry, I didn’t understand that.";
     userConversations[from].push({ role: "assistant", content: reply });
+    
+    // Log interaction
+    const logLine = `[${new Date().toISOString()}] FROM: ${from}
+USER: ${incomingMsg}
+BOT: ${reply}
+---
+`;
+    fs.appendFile("user_interactions.log", logLine, err => {
+      if (err) console.error("Failed to log user interaction:", err);
+    });
+    // Also log to terminal
+    console.log("Groq reply:", reply);
+
     twiml.message(reply);
+    console.log(`--- Sending TwiML to Twilio ---`);
+    console.log(twiml.toString());
     res.type("text/xml").send(twiml.toString());
-    reminders.push({ userId: from, message: reply, scheduledTime: Date.now() });
-    scheduleReminder(from, reply);
-    addReminder(from, reply);
   } catch (err) {
-    console.error("Error:", err.message);
+    console.error("Full error in /webhook:", err);
     twiml.message("Oops, something went wrong. Please try again later.");
     res.type("text/xml").send(twiml.toString());
   }
+});
+
+app.get("/status", (req, res) => {
+  res.send("Server is running.");
 });
 
 // UI test page (GET)

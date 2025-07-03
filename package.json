@@ -8,6 +8,7 @@
     "express": "^5.1.0",
     "firebase-admin": "^13.3.0",
     "groq-sdk": "^0.20.1",
+    "node-cron": "^4.2.0",
     "readline-sync": "^1.4.10",
     "twilio": "^5.5.2"
   },
